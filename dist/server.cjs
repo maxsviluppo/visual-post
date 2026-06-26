@@ -38,6 +38,7 @@ var import_fs = __toESM(require("fs"), 1);
 var import_dotenv = __toESM(require("dotenv"), 1);
 var import_nodemailer = __toESM(require("nodemailer"), 1);
 var import_blob = require("@vercel/blob");
+var import_serverless = require("@neondatabase/serverless");
 import_dotenv.default.config();
 var app = (0, import_express.default)();
 var PORT = 3e3;
@@ -50,153 +51,284 @@ var DEFAULT_SETTINGS = {
   streamSubtitle: "Le migliori scoperte e novit\xE0 esclusive selezionate questa settimana in anteprima assoluta.",
   notificationEmail: "castromassimo@gmail.com"
 };
-async function safeBlobFetch(url) {
-  const response = await fetch(url, { headers: { "Cache-Control": "no-cache, no-store" } });
-  if (!response.ok) {
-    console.error(`[Blob-Fetch] HTTP ${response.status} for ${url}`);
-    return null;
+var IS_VERCEL = !!process.env.VERCEL;
+var DB_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.NEON_DATABASE_URL;
+var hasDatabase = !!DB_URL;
+function getDb() {
+  if (!DB_URL) throw new Error("DATABASE_URL non configurato");
+  return (0, import_serverless.neon)(DB_URL);
+}
+async function initDb() {
+  if (!hasDatabase) {
+    console.log("[DB] DATABASE_URL non trovato \u2014 uso file JSON locali.");
+    return;
   }
-  const text = await response.text();
   try {
-    return JSON.parse(text);
+    const sql = getDb();
+    await sql`
+      CREATE TABLE IF NOT EXISTS vs_posts (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        price TEXT,
+        description TEXT,
+        media_type TEXT NOT NULL DEFAULT 'image',
+        media_url TEXT NOT NULL,
+        cta_text TEXT,
+        whatsapp_message TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ,
+        click_count INTEGER NOT NULL DEFAULT 0,
+        overlay_text TEXT,
+        overlay_x REAL,
+        overlay_y REAL
+      )
+    `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS vs_settings (
+        key TEXT PRIMARY KEY DEFAULT 'main',
+        value TEXT NOT NULL DEFAULT '{}'
+      )
+    `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS vs_bookings (
+        id TEXT PRIMARY KEY,
+        post_id TEXT NOT NULL,
+        post_title TEXT NOT NULL,
+        date TEXT NOT NULL,
+        name TEXT NOT NULL,
+        guests INTEGER NOT NULL DEFAULT 1,
+        phone TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    console.log("[DB] Tabelle Neon pronte.");
+  } catch (err) {
+    console.error("[DB] Errore inizializzazione tabelle:", err);
+  }
+}
+function rowToPost(row) {
+  let tags = [];
+  try {
+    tags = JSON.parse(row.tags || "[]");
   } catch {
-    console.error(`[Blob-Fetch] JSON parse failed for ${url}. Response starts with: ${text.slice(0, 120)}`);
-    return null;
+    tags = [];
+  }
+  return {
+    id: row.id,
+    title: row.title,
+    price: row.price ?? void 0,
+    description: row.description ?? void 0,
+    mediaType: row.media_type,
+    mediaUrl: row.media_url,
+    ctaText: row.cta_text ?? void 0,
+    whatsappMessage: row.whatsapp_message ?? void 0,
+    tags,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    expiresAt: row.expires_at ? row.expires_at instanceof Date ? row.expires_at.toISOString() : String(row.expires_at) : null,
+    clickCount: row.click_count ?? 0,
+    overlayText: row.overlay_text ?? void 0,
+    overlayX: row.overlay_x !== null ? Number(row.overlay_x) : void 0,
+    overlayY: row.overlay_y !== null ? Number(row.overlay_y) : void 0
+  };
+}
+function rowToBooking(row) {
+  return {
+    id: row.id,
+    postId: row.post_id,
+    postTitle: row.post_title,
+    date: row.date,
+    name: row.name,
+    guests: Number(row.guests),
+    phone: row.phone,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
+  };
+}
+async function readPosts() {
+  if (hasDatabase) {
+    try {
+      const sql = getDb();
+      const rows = await sql`SELECT * FROM vs_posts ORDER BY created_at DESC`;
+      console.log(`[ReadPosts] ${rows.length} post letti da Neon.`);
+      return rows.map(rowToPost);
+    } catch (err) {
+      console.error("[ReadPosts] Errore DB:", err);
+      return [];
+    }
+  }
+  try {
+    if (!import_fs.default.existsSync(POSTS_FILE)) {
+      import_fs.default.writeFileSync(POSTS_FILE, JSON.stringify(INITIAL_POSTS, null, 2), "utf-8");
+      return INITIAL_POSTS;
+    }
+    return JSON.parse(import_fs.default.readFileSync(POSTS_FILE, "utf-8"));
+  } catch (error) {
+    console.error("[ReadPosts] Errore file locale:", error);
+    return INITIAL_POSTS;
+  }
+}
+async function writePosts(posts) {
+  if (hasDatabase) {
+    try {
+      const sql = getDb();
+      await sql`DELETE FROM vs_posts`;
+      for (const p of posts) {
+        const tags = JSON.stringify(p.tags ?? []);
+        await sql`
+          INSERT INTO vs_posts (id, title, price, description, media_type, media_url, cta_text,
+            whatsapp_message, tags, created_at, expires_at, click_count, overlay_text, overlay_x, overlay_y)
+          VALUES (${p.id}, ${p.title}, ${p.price ?? null}, ${p.description ?? null},
+            ${p.mediaType}, ${p.mediaUrl}, ${p.ctaText ?? null}, ${p.whatsappMessage ?? null},
+            ${tags}, ${p.createdAt}, ${p.expiresAt ?? null}, ${p.clickCount ?? 0},
+            ${p.overlayText ?? null}, ${p.overlayX ?? null}, ${p.overlayY ?? null})
+        `;
+      }
+      console.log(`[WritePosts] ${posts.length} post salvati su Neon.`);
+      return true;
+    } catch (err) {
+      console.error("[WritePosts] Errore DB:", err);
+      return false;
+    }
+  }
+  try {
+    import_fs.default.writeFileSync(POSTS_FILE, JSON.stringify(posts, null, 2), "utf-8");
+    return true;
+  } catch (error) {
+    console.error("[WritePosts] Errore file locale:", error);
+    return false;
   }
 }
 async function readSettings() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const hasBlob = !!(token && !token.startsWith("vercel_blob_rw_..."));
-  if (IS_VERCEL) {
-    if (!hasBlob) {
-      console.warn("[ReadSettings] BLOB_READ_WRITE_TOKEN non configurato su Vercel. Usando defaults.");
-      return DEFAULT_SETTINGS;
-    }
+  if (hasDatabase) {
     try {
-      const { blobs } = await (0, import_blob.list)({ prefix: "db/settings.json", token });
-      const dbBlob = blobs.find((b) => b.pathname === "db/settings.json");
-      if (!dbBlob) return DEFAULT_SETTINGS;
-      const parsed = await safeBlobFetch(dbBlob.url);
-      return parsed ? { ...DEFAULT_SETTINGS, ...parsed } : DEFAULT_SETTINGS;
-    } catch (err) {
-      console.error("[ReadSettings] Errore Blob:", err);
-      return DEFAULT_SETTINGS;
-    }
-  } else {
-    try {
-      if (!import_fs.default.existsSync(SETTINGS_FILE)) {
-        import_fs.default.writeFileSync(SETTINGS_FILE, JSON.stringify(DEFAULT_SETTINGS, null, 2), "utf-8");
-        return DEFAULT_SETTINGS;
+      const sql = getDb();
+      const rows = await sql`SELECT value FROM vs_settings WHERE key = 'main'`;
+      if (rows.length > 0) {
+        try {
+          return { ...DEFAULT_SETTINGS, ...JSON.parse(rows[0].value) };
+        } catch {
+          return DEFAULT_SETTINGS;
+        }
       }
-      const parsed = JSON.parse(import_fs.default.readFileSync(SETTINGS_FILE, "utf-8"));
-      return { ...DEFAULT_SETTINGS, ...parsed };
-    } catch (error) {
-      console.error("[ReadSettings] Errore file locale:", error);
+      return DEFAULT_SETTINGS;
+    } catch (err) {
+      console.error("[ReadSettings] Errore DB:", err);
       return DEFAULT_SETTINGS;
     }
+  }
+  try {
+    if (!import_fs.default.existsSync(SETTINGS_FILE)) {
+      import_fs.default.writeFileSync(SETTINGS_FILE, JSON.stringify(DEFAULT_SETTINGS, null, 2), "utf-8");
+      return DEFAULT_SETTINGS;
+    }
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(import_fs.default.readFileSync(SETTINGS_FILE, "utf-8")) };
+  } catch {
+    return DEFAULT_SETTINGS;
   }
 }
 async function writeSettings(settings) {
-  const dataStr = JSON.stringify(settings, null, 2);
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const hasBlob = !!(token && !token.startsWith("vercel_blob_rw_..."));
-  if (IS_VERCEL) {
-    if (!hasBlob) return false;
+  if (hasDatabase) {
     try {
-      await (0, import_blob.put)("db/settings.json", dataStr, { access: "public", allowOverwrite: true, token });
-      console.log("[WriteSettings] Settings salvati su Vercel Blob.");
+      const sql = getDb();
+      const value = JSON.stringify(settings);
+      await sql`
+        INSERT INTO vs_settings (key, value) VALUES ('main', ${value})
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+      `;
       return true;
     } catch (err) {
-      console.error("[WriteSettings] Errore scrittura Blob:", err);
+      console.error("[WriteSettings] Errore DB:", err);
       return false;
     }
-  } else {
-    try {
-      import_fs.default.writeFileSync(SETTINGS_FILE, dataStr, "utf-8");
-    } catch (error) {
-      console.warn("[WriteSettings] Errore scrittura file locale:", error);
-    }
-    if (hasBlob) {
-      (0, import_blob.put)("db/settings.json", dataStr, { access: "public", allowOverwrite: true, token }).catch((err) => console.warn("[WriteSettings] Sync Blob fallito (non critico):", err));
-    }
+  }
+  try {
+    import_fs.default.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
     return true;
+  } catch (error) {
+    console.error("[WriteSettings] Errore file locale:", error);
+    return false;
   }
 }
 async function readBookings() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const hasBlob = !!(token && !token.startsWith("vercel_blob_rw_..."));
-  if (IS_VERCEL) {
-    if (!hasBlob) return [];
+  if (hasDatabase) {
     try {
-      const { blobs } = await (0, import_blob.list)({ prefix: "db/bookings.json", token });
-      const dbBlob = blobs.find((b) => b.pathname === "db/bookings.json");
-      if (!dbBlob) return [];
-      const parsed = await safeBlobFetch(dbBlob.url);
-      return parsed ?? [];
+      const sql = getDb();
+      const rows = await sql`SELECT * FROM vs_bookings ORDER BY created_at DESC`;
+      return rows.map(rowToBooking);
     } catch (err) {
-      console.error("[ReadBookings] Errore Blob:", err);
+      console.error("[ReadBookings] Errore DB:", err);
       return [];
     }
-  } else {
-    try {
-      if (!import_fs.default.existsSync(BOOKINGS_FILE)) {
-        import_fs.default.writeFileSync(BOOKINGS_FILE, JSON.stringify([], null, 2), "utf-8");
-        return [];
-      }
-      return JSON.parse(import_fs.default.readFileSync(BOOKINGS_FILE, "utf-8"));
-    } catch (error) {
-      console.error("[ReadBookings] Errore file locale:", error);
+  }
+  try {
+    if (!import_fs.default.existsSync(BOOKINGS_FILE)) {
+      import_fs.default.writeFileSync(BOOKINGS_FILE, JSON.stringify([], null, 2), "utf-8");
       return [];
     }
+    return JSON.parse(import_fs.default.readFileSync(BOOKINGS_FILE, "utf-8"));
+  } catch (error) {
+    console.error("[ReadBookings] Errore file locale:", error);
+    return [];
   }
 }
 async function writeBookings(bookings) {
-  const dataStr = JSON.stringify(bookings, null, 2);
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const hasBlob = !!(token && !token.startsWith("vercel_blob_rw_..."));
-  if (IS_VERCEL) {
-    if (!hasBlob) return false;
+  if (hasDatabase) {
     try {
-      await (0, import_blob.put)("db/bookings.json", dataStr, { access: "public", allowOverwrite: true, token });
-      console.log("[WriteBookings] Bookings salvati su Vercel Blob.");
+      const sql = getDb();
+      await sql`DELETE FROM vs_bookings`;
+      for (const b of bookings) {
+        await sql`
+          INSERT INTO vs_bookings (id, post_id, post_title, date, name, guests, phone, created_at)
+          VALUES (${b.id}, ${b.postId}, ${b.postTitle}, ${b.date}, ${b.name}, ${b.guests}, ${b.phone}, ${b.createdAt})
+        `;
+      }
       return true;
     } catch (err) {
-      console.error("[WriteBookings] Errore scrittura Blob:", err);
+      console.error("[WriteBookings] Errore DB:", err);
       return false;
     }
-  } else {
-    try {
-      import_fs.default.writeFileSync(BOOKINGS_FILE, dataStr, "utf-8");
-    } catch (error) {
-      console.warn("[WriteBookings] Errore scrittura file locale:", error);
-    }
-    if (hasBlob) {
-      (0, import_blob.put)("db/bookings.json", dataStr, { access: "public", allowOverwrite: true, token }).catch((err) => console.warn("[WriteBookings] Sync Blob fallito (non critico):", err));
-    }
+  }
+  try {
+    import_fs.default.writeFileSync(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), "utf-8");
     return true;
+  } catch (error) {
+    console.error("[WriteBookings] Errore file locale:", error);
+    return false;
   }
 }
 async function cleanupExpiredBookings() {
+  if (hasDatabase) {
+    try {
+      const sql = getDb();
+      await sql`
+        DELETE FROM vs_bookings
+        WHERE date ~ '^\d{4}-\d{2}-\d{2}$'
+        AND (date::date + INTERVAL '1 day') <= NOW()
+      `;
+      return;
+    } catch (err) {
+      console.error("[Auto-Cleanup] Errore DB:", err);
+    }
+  }
   try {
     const bookings = await readBookings();
     const now = /* @__PURE__ */ new Date();
-    const activeBookings = bookings.filter((booking) => {
-      if (!booking.date) return true;
-      const [year, month, day] = booking.date.split("-").map(Number);
-      if (isNaN(year) || isNaN(month) || isNaN(day)) return true;
-      const expirationDate = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
-      return now.getTime() < expirationDate.getTime();
+    const active = bookings.filter((b) => {
+      if (!b.date) return true;
+      const [y, m, d] = b.date.split("-").map(Number);
+      if (isNaN(y) || isNaN(m) || isNaN(d)) return true;
+      return now < new Date(y, m - 1, d + 1, 0, 0, 0, 0);
     });
-    if (activeBookings.length !== bookings.length) {
-      console.log(`[Auto-Cleanup] Rimossi ${bookings.length - activeBookings.length} prenotazioni scadute (oltre la mezzanotte del giorno successivo).`);
-      await writeBookings(activeBookings);
+    if (active.length !== bookings.length) {
+      console.log(`[Auto-Cleanup] Rimossi ${bookings.length - active.length} prenotazioni scadute.`);
+      await writeBookings(active);
     }
   } catch (err) {
-    console.error("[Auto-Cleanup] Errore durante la pulizia automatica delle prenotazioni:", err);
+    console.error("[Auto-Cleanup] Errore cleanup:", err);
   }
 }
 async function cleanupExpiredBlobs() {
-  console.log("[Blob-Cleanup] Pulizia automatica dei blob disattivata (cancellazione solo manuale).");
+  console.log("[Blob-Cleanup] Pulizia blob disattivata (solo manuale).");
 }
 var INITIAL_POSTS = [
   {
@@ -260,80 +392,6 @@ var INITIAL_POSTS = [
     clickCount: 42
   }
 ];
-var IS_VERCEL = !!process.env.VERCEL;
-async function readPosts() {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const hasBlob = !!(token && !token.startsWith("vercel_blob_rw_..."));
-  if (IS_VERCEL) {
-    if (!hasBlob) {
-      console.error("[ReadPosts] BLOB_READ_WRITE_TOKEN non configurato su Vercel!");
-      return [];
-    }
-    try {
-      const { blobs } = await (0, import_blob.list)({ prefix: "db/posts.json", token });
-      const dbBlob = blobs.find((b) => b.pathname === "db/posts.json");
-      if (!dbBlob) {
-        console.log("[ReadPosts] db/posts.json non trovato nel Blob. DB vuoto.");
-        return [];
-      }
-      const response = await fetch(dbBlob.url, { headers: { "Cache-Control": "no-cache, no-store" } });
-      if (!response.ok) throw new Error(`Blob fetch failed: ${response.status}`);
-      const data = await response.json();
-      console.log(`[ReadPosts] ${data.length} post letti da Vercel Blob.`);
-      return data;
-    } catch (err) {
-      console.error("[ReadPosts] Errore lettura Blob:", err);
-      return [];
-    }
-  } else {
-    try {
-      if (!import_fs.default.existsSync(POSTS_FILE)) {
-        import_fs.default.writeFileSync(POSTS_FILE, JSON.stringify(INITIAL_POSTS, null, 2), "utf-8");
-        console.log("[ReadPosts] posts.json creato con post demo iniziali.");
-        return INITIAL_POSTS;
-      }
-      const data = import_fs.default.readFileSync(POSTS_FILE, "utf-8");
-      const posts = JSON.parse(data);
-      console.log(`[ReadPosts] ${posts.length} post letti da file locale.`);
-      return posts;
-    } catch (error) {
-      console.error("[ReadPosts] Errore lettura file locale:", error);
-      return INITIAL_POSTS;
-    }
-  }
-}
-async function writePosts(posts) {
-  const dataStr = JSON.stringify(posts, null, 2);
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const hasBlob = !!(token && !token.startsWith("vercel_blob_rw_..."));
-  if (IS_VERCEL) {
-    if (!hasBlob) {
-      console.error("[WritePosts] BLOB_READ_WRITE_TOKEN mancante! Impossibile salvare.");
-      return false;
-    }
-    try {
-      await (0, import_blob.put)("db/posts.json", dataStr, { access: "public", allowOverwrite: true, token });
-      console.log(`[WritePosts] ${posts.length} post salvati su Vercel Blob.`);
-      return true;
-    } catch (err) {
-      console.error("[WritePosts] Errore scrittura Blob:", err);
-      return false;
-    }
-  } else {
-    let localOk = false;
-    try {
-      import_fs.default.writeFileSync(POSTS_FILE, dataStr, "utf-8");
-      localOk = true;
-      console.log(`[WritePosts] ${posts.length} post salvati in posts.json locale.`);
-    } catch (error) {
-      console.error("[WritePosts] Errore scrittura file locale:", error);
-    }
-    if (hasBlob) {
-      (0, import_blob.put)("db/posts.json", dataStr, { access: "public", allowOverwrite: true, token }).then(() => console.log("[WritePosts] Sync Blob completato.")).catch((err) => console.warn("[WritePosts] Sync Blob fallito (non critico in locale):", err));
-    }
-    return localOk;
-  }
-}
 app.use(import_express.default.json({ limit: "100mb" }));
 app.use(import_express.default.urlencoded({ limit: "100mb", extended: true }));
 app.get("/api/posts", async (req, res) => {
@@ -452,25 +510,26 @@ app.post("/api/upload", async (req, res) => {
   }
 });
 app.get("/api/debug", async (req, res) => {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const hasToken = !!(token && !token.startsWith("vercel_blob_rw_..."));
-  let blobList = [];
-  let blobError = null;
-  if (hasToken) {
+  let dbStatus = "no DATABASE_URL";
+  let postCount = 0;
+  if (hasDatabase) {
     try {
-      const { blobs } = await (0, import_blob.list)({ token });
-      blobList = blobs.map((b) => b.pathname);
+      const sql = getDb();
+      const rows = await sql`SELECT COUNT(*) as cnt FROM vs_posts`;
+      postCount = Number(rows[0]?.cnt ?? 0);
+      dbStatus = "connected";
     } catch (e) {
-      blobError = e.message;
+      dbStatus = "error: " + e.message;
     }
   }
   res.json({
     isVercel: !!process.env.VERCEL,
-    hasToken,
-    tokenPrefix: token ? token.substring(0, 25) + "..." : "(none)",
-    blobFiles: blobList,
-    blobError,
-    nodeEnv: process.env.NODE_ENV
+    hasDatabase,
+    dbUrl: DB_URL ? DB_URL.replace(/:\/\/[^@]+@/, "://<credentials>@") : "(none)",
+    dbStatus,
+    postCount,
+    nodeEnv: process.env.NODE_ENV,
+    blobTokenPresent: !!process.env.BLOB_READ_WRITE_TOKEN
   });
 });
 app.post("/api/posts/clear-demo", async (req, res) => {
@@ -599,6 +658,7 @@ app.post("/api/bookings", async (req, res) => {
   });
 });
 async function start() {
+  await initDb();
   const uploadsDir = import_path.default.join(process.cwd(), "assets", "uploads");
   if (!IS_VERCEL) {
     if (!import_fs.default.existsSync(uploadsDir)) import_fs.default.mkdirSync(uploadsDir, { recursive: true });
