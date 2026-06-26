@@ -59,7 +59,24 @@ const DEFAULT_SETTINGS: CreatorSettings = {
   notificationEmail: "castromassimo@gmail.com"
 };
 
-function readSettings(): CreatorSettings {
+async function readSettings(): Promise<CreatorSettings> {
+  try {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (token && !token.startsWith("vercel_blob_rw_...")) {
+      const { blobs } = await list({ prefix: "db/settings.json", token });
+      const dbBlob = blobs.find(b => b.pathname === "db/settings.json");
+      if (dbBlob) {
+        const response = await fetch(dbBlob.url);
+        if (response.ok) {
+          const parsed = await response.json();
+          return { ...DEFAULT_SETTINGS, ...parsed };
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Error reading settings from Vercel Blob:", err);
+  }
+
   try {
     if (!fs.existsSync(SETTINGS_FILE)) {
       fs.writeFileSync(SETTINGS_FILE, JSON.stringify(DEFAULT_SETTINGS, null, 2), "utf-8");
@@ -74,15 +91,46 @@ function readSettings(): CreatorSettings {
   }
 }
 
-function writeSettings(settings: CreatorSettings) {
+async function writeSettings(settings: CreatorSettings) {
+  const dataStr = JSON.stringify(settings, null, 2);
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+    fs.writeFileSync(SETTINGS_FILE, dataStr, "utf-8");
   } catch (error) {
-    console.error("Error writing settings file:", error);
+    console.warn("Could not write settings file locally:", error);
+  }
+
+  try {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (token && !token.startsWith("vercel_blob_rw_...")) {
+      await put("db/settings.json", dataStr, {
+        access: "public",
+        addRandomSuffix: false,
+        token
+      });
+      console.log("[Blob-DB] Settings salvati con successo su Vercel Blob.");
+    }
+  } catch (err) {
+    console.error("Error writing settings to Vercel Blob:", err);
   }
 }
 
-function readBookings(): Booking[] {
+async function readBookings(): Promise<Booking[]> {
+  try {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (token && !token.startsWith("vercel_blob_rw_...")) {
+      const { blobs } = await list({ prefix: "db/bookings.json", token });
+      const dbBlob = blobs.find(b => b.pathname === "db/bookings.json");
+      if (dbBlob) {
+        const response = await fetch(dbBlob.url);
+        if (response.ok) {
+          return await response.json();
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Error reading bookings from Vercel Blob:", err);
+  }
+
   try {
     if (!fs.existsSync(BOOKINGS_FILE)) {
       fs.writeFileSync(BOOKINGS_FILE, JSON.stringify([], null, 2), "utf-8");
@@ -96,19 +144,35 @@ function readBookings(): Booking[] {
   }
 }
 
-function writeBookings(bookings: Booking[]) {
+async function writeBookings(bookings: Booking[]) {
+  const dataStr = JSON.stringify(bookings, null, 2);
   try {
-    fs.writeFileSync(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), "utf-8");
+    fs.writeFileSync(BOOKINGS_FILE, dataStr, "utf-8");
   } catch (error) {
-    console.error("Error writing bookings file:", error);
+    console.warn("Could not write bookings file locally:", error);
+  }
+
+  try {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (token && !token.startsWith("vercel_blob_rw_...")) {
+      await put("db/bookings.json", dataStr, {
+        access: "public",
+        addRandomSuffix: false,
+        token
+      });
+      console.log("[Blob-DB] Bookings salvati con successo su Vercel Blob.");
+    }
+  } catch (err) {
+    console.error("Error writing bookings to Vercel Blob:", err);
   }
 }
 
+
 // Automatic cleanup for bookings
 // A booking for e.g. July 4th is deleted at 00:00:00 (midnight) of July 5th.
-function cleanupExpiredBookings() {
+async function cleanupExpiredBookings() {
   try {
-    const bookings = readBookings();
+    const bookings = await readBookings();
     const now = new Date();
     
     const activeBookings = bookings.filter(booking => {
@@ -127,12 +191,13 @@ function cleanupExpiredBookings() {
     
     if (activeBookings.length !== bookings.length) {
       console.log(`[Auto-Cleanup] Rimossi ${bookings.length - activeBookings.length} prenotazioni scadute (oltre la mezzanotte del giorno successivo).`);
-      writeBookings(activeBookings);
+      await writeBookings(activeBookings);
     }
   } catch (err) {
     console.error("[Auto-Cleanup] Errore durante la pulizia automatica delle prenotazioni:", err);
   }
 }
+
 
 // Background job to clean up blobs older than 48 hours
 async function cleanupExpiredBlobs() {
@@ -251,8 +316,24 @@ const INITIAL_POSTS: VisualStreamPost[] = [
   }
 ];
 
-// Ensure the database file exists
-function readPosts(): VisualStreamPost[] {
+// Helper to read posts from Vercel Blob (or fallback to local file)
+async function readPosts(): Promise<VisualStreamPost[]> {
+  try {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (token && !token.startsWith("vercel_blob_rw_...")) {
+      const { blobs } = await list({ prefix: "db/posts.json", token });
+      const dbBlob = blobs.find(b => b.pathname === "db/posts.json");
+      if (dbBlob) {
+        const response = await fetch(dbBlob.url);
+        if (response.ok) {
+          return await response.json();
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Error reading posts from Vercel Blob, falling back to local:", err);
+  }
+
   try {
     if (!fs.existsSync(POSTS_FILE)) {
       fs.writeFileSync(POSTS_FILE, JSON.stringify(INITIAL_POSTS, null, 2), "utf-8");
@@ -266,13 +347,29 @@ function readPosts(): VisualStreamPost[] {
   }
 }
 
-function writePosts(posts: VisualStreamPost[]) {
+async function writePosts(posts: VisualStreamPost[]) {
+  const dataStr = JSON.stringify(posts, null, 2);
   try {
-    fs.writeFileSync(POSTS_FILE, JSON.stringify(posts, null, 2), "utf-8");
+    fs.writeFileSync(POSTS_FILE, dataStr, "utf-8");
   } catch (error) {
-    console.error("Error writing posts file:", error);
+    console.warn("Could not write posts file locally:", error);
+  }
+
+  try {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (token && !token.startsWith("vercel_blob_rw_...")) {
+      await put("db/posts.json", dataStr, {
+        access: "public",
+        addRandomSuffix: false, // overwrite
+        token
+      });
+      console.log("[Blob-DB] Posts salvati con successo su Vercel Blob.");
+    }
+  } catch (err) {
+    console.error("Error writing posts to Vercel Blob:", err);
   }
 }
+
 
 
 
@@ -281,8 +378,8 @@ app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
 // API: Get active posts (filter out expired ones on the client or server)
-app.get("/api/posts", (req, res) => {
-  const posts = readPosts();
+app.get("/api/posts", async (req, res) => {
+  const posts = await readPosts();
   const now = new Date();
   
   // Filter active posts (unexpired, or unexpiration date is not set)
@@ -298,21 +395,21 @@ app.get("/api/posts", (req, res) => {
 });
 
 // API: Get ALL posts (active and expired, for creator studio)
-app.get("/api/all-posts", (req, res) => {
-  const posts = readPosts();
+app.get("/api/all-posts", async (req, res) => {
+  const posts = await readPosts();
   posts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   res.json(posts);
 });
 
 // API: Create a new post
-app.post("/api/posts", (req, res) => {
+app.post("/api/posts", async (req, res) => {
   const { title, price, description, mediaType, mediaUrl, ctaText, whatsappMessage, tags, expiresAt, overlayText, overlayX, overlayY } = req.body;
   
   if (!title || !mediaUrl) {
     return res.status(400).json({ error: "Titolo e URL media sono obbligatori." });
   }
   
-  const posts = readPosts();
+  const posts = await readPosts();
   
   const newPost: VisualStreamPost = {
     id: "post-" + Date.now(),
@@ -333,17 +430,18 @@ app.post("/api/posts", (req, res) => {
   };
   
   posts.push(newPost);
-  writePosts(posts);
+  await writePosts(posts);
   
   res.status(201).json(newPost);
 });
 
+
 // API: Update a post
-app.put("/api/posts/:id", (req, res) => {
+app.put("/api/posts/:id", async (req, res) => {
   const { id } = req.params;
   const { title, price, description, mediaType, mediaUrl, ctaText, whatsappMessage, tags, expiresAt, overlayText, overlayX, overlayY } = req.body;
   
-  const posts = readPosts();
+  const posts = await readPosts();
   const index = posts.findIndex(p => p.id === id);
   
   if (index === -1) {
@@ -367,7 +465,7 @@ app.put("/api/posts/:id", (req, res) => {
   };
   
   posts[index] = updatedPost;
-  writePosts(posts);
+  await writePosts(posts);
   
   res.json(updatedPost);
 });
@@ -401,6 +499,7 @@ app.post("/api/upload", async (req, res) => {
     const blob = await put(filename, buffer, {
       access: "public",
       contentType: mimeType,
+      addRandomSuffix: true, // Allow uploading identical files by generating unique names
       token
     });
 
@@ -415,7 +514,7 @@ app.post("/api/upload", async (req, res) => {
 // API: Delete a post
 app.delete("/api/posts/:id", async (req, res) => {
   const { id } = req.params;
-  const posts = readPosts();
+  const posts = await readPosts();
   const index = posts.findIndex(p => p.id === id);
   
   if (index === -1) {
@@ -438,20 +537,21 @@ app.delete("/api/posts/:id", async (req, res) => {
   }
 
   const filtered = posts.filter(p => p.id !== id);
-  writePosts(filtered);
+
+  await writePosts(filtered);
   res.json({ success: true, message: "Post eliminato correttamente e blob rimosso se presente." });
 });
 
 
 // API: Track CTA click
-app.post("/api/posts/:id/click", (req, res) => {
+app.post("/api/posts/:id/click", async (req, res) => {
   const { id } = req.params;
-  const posts = readPosts();
+  const posts = await readPosts();
   const index = posts.findIndex(p => p.id === id);
   
   if (index !== -1) {
     posts[index].clickCount = (posts[index].clickCount || 0) + 1;
-    writePosts(posts);
+    await writePosts(posts);
     return res.json({ success: true, clicks: posts[index].clickCount });
   }
   
@@ -459,15 +559,15 @@ app.post("/api/posts/:id/click", (req, res) => {
 });
 
 // API: Get settings
-app.get("/api/settings", (req, res) => {
-  const settings = readSettings();
+app.get("/api/settings", async (req, res) => {
+  const settings = await readSettings();
   res.json(settings);
 });
 
 // API: Save settings
-app.post("/api/settings", (req, res) => {
+app.post("/api/settings", async (req, res) => {
   const { whatsappNumber, streamTitle, streamSubtitle, notificationEmail } = req.body;
-  const currentSettings = readSettings();
+  const currentSettings = await readSettings();
   
   const updatedSettings: CreatorSettings = {
     whatsappNumber: whatsappNumber || currentSettings.whatsappNumber,
@@ -476,30 +576,30 @@ app.post("/api/settings", (req, res) => {
     notificationEmail: notificationEmail || currentSettings.notificationEmail || "castromassimo@gmail.com"
   };
   
-  writeSettings(updatedSettings);
+  await writeSettings(updatedSettings);
   res.json(updatedSettings);
 });
 
 // API: Get all bookings
-app.get("/api/bookings", (req, res) => {
-  cleanupExpiredBookings();
-  const bookings = readBookings();
+app.get("/api/bookings", async (req, res) => {
+  await cleanupExpiredBookings();
+  const bookings = await readBookings();
   // Sort descending by creation date
   bookings.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   res.json(bookings);
 });
 
 // API: Delete a booking
-app.delete("/api/bookings/:id", (req, res) => {
+app.delete("/api/bookings/:id", async (req, res) => {
   const { id } = req.params;
-  const bookings = readBookings();
+  const bookings = await readBookings();
   const filtered = bookings.filter(b => b.id !== id);
   
   if (bookings.length === filtered.length) {
     return res.status(404).json({ error: "Prenotazione non trovata." });
   }
   
-  writeBookings(filtered);
+  await writeBookings(filtered);
   res.json({ success: true, message: "Prenotazione eliminata." });
 });
 
@@ -612,11 +712,11 @@ app.post("/api/bookings", async (req, res) => {
   }
   
   // Find post details to include the title
-  const posts = readPosts();
+  const posts = await readPosts();
   const post = posts.find(p => p.id === postId);
   const postTitle = post ? post.title : "Esperienza Sconosciuta";
   
-  const bookings = readBookings();
+  const bookings = await readBookings();
   const newBooking: Booking = {
     id: "booking-" + Date.now(),
     postId,
@@ -629,13 +729,14 @@ app.post("/api/bookings", async (req, res) => {
   };
   
   bookings.push(newBooking);
-  writeBookings(bookings);
+  await writeBookings(bookings);
   
   res.status(201).json({
     success: true,
     booking: newBooking
   });
 });
+
 
 
 
