@@ -4,8 +4,10 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
+import { put, del, list } from "@vercel/blob";
 
 dotenv.config();
+
 
 const app = express();
 const PORT = 3000;
@@ -131,6 +133,62 @@ function cleanupExpiredBookings() {
     console.error("[Auto-Cleanup] Errore durante la pulizia automatica delle prenotazioni:", err);
   }
 }
+
+// Background job to clean up blobs older than 48 hours
+async function cleanupExpiredBlobs() {
+  try {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (!token || token.startsWith("vercel_blob_rw_...")) {
+      console.log("[Blob-Cleanup] BLOB_READ_WRITE_TOKEN non configurato o non valido. Salto la pulizia dei blob.");
+      return;
+    }
+
+    console.log("[Blob-Cleanup] Avvio della pulizia automatica dei blob...");
+    const { blobs } = await list({ token });
+    const now = new Date();
+    const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+
+    let deletedCount = 0;
+    const posts = readPosts();
+    let postsChanged = false;
+
+    for (const blob of blobs) {
+      const uploadedAt = new Date(blob.uploadedAt);
+      if (uploadedAt < fortyEightHoursAgo) {
+        console.log(`[Blob-Cleanup] Rilevato blob scaduto (>48h): ${blob.url} (caricato il: ${blob.uploadedAt})`);
+        try {
+          await del(blob.url, { token });
+          deletedCount++;
+
+          // Remove the post referencing this blob (or we can just keep the post but set mediaUrl empty/delete it)
+          // The instruction says "dopo 48 ore elimina il file archiviato in automatico, no tutti i file solo quello archiviato 48 ore prima."
+          // Deleting the post entirely is cleaner since without the file the post has no media.
+          const postIndex = posts.findIndex(p => p.mediaUrl === blob.url);
+          if (postIndex !== -1) {
+            console.log(`[Blob-Cleanup] Rimozione del post '${posts[postIndex].title}' (${posts[postIndex].id}) associato al blob eliminato.`);
+            posts.splice(postIndex, 1);
+            postsChanged = true;
+          }
+        } catch (delErr) {
+          console.error(`[Blob-Cleanup] Errore durante l'eliminazione del blob ${blob.url}:`, delErr);
+        }
+      }
+    }
+
+    if (deletedCount > 0) {
+      console.log(`[Blob-Cleanup] Rimossi con successo ${deletedCount} blob scaduti.`);
+    } else {
+      console.log("[Blob-Cleanup] Nessun blob scaduto rilevato.");
+    }
+
+    if (postsChanged) {
+      writePosts(posts);
+    }
+  } catch (error) {
+    console.error("[Blob-Cleanup] Errore durante la pulizia automatica dei blob:", error);
+  }
+}
+
 
 
 // Pre-seeded high-fidelity products
@@ -314,19 +372,76 @@ app.put("/api/posts/:id", (req, res) => {
   res.json(updatedPost);
 });
 
+// API: Upload file to Vercel Blob
+app.post("/api/upload", async (req, res) => {
+  try {
+    const { filename, fileData, mimeType } = req.body;
+    if (!filename || !fileData) {
+      return res.status(400).json({ error: "Nome file e dati file (base64 o data URL) sono obbligatori." });
+    }
+
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (!token || token.startsWith("vercel_blob_rw_...")) {
+      return res.status(500).json({ 
+        error: "BLOB_READ_WRITE_TOKEN non configurato nel file .env. Impossibile caricare su Vercel Blob." 
+      });
+    }
+
+    // Convert Base64 back to buffer
+    let buffer: Buffer;
+    if (fileData.startsWith("data:")) {
+      const base64Data = fileData.split(",")[1];
+      buffer = Buffer.from(base64Data, "base64");
+    } else {
+      buffer = Buffer.from(fileData, "base64");
+    }
+
+    console.log(`[Upload] Caricamento file ${filename} (${buffer.length} byte) su Vercel Blob...`);
+
+    const blob = await put(filename, buffer, {
+      access: "public",
+      contentType: mimeType,
+      token
+    });
+
+    console.log(`[Upload] File caricato con successo. URL: ${blob.url}`);
+    res.json({ url: blob.url });
+  } catch (err: any) {
+    console.error("[Upload] Errore durante il caricamento su Vercel Blob:", err);
+    res.status(500).json({ error: "Errore durante il caricamento del file: " + err.message });
+  }
+});
+
 // API: Delete a post
-app.delete("/api/posts/:id", (req, res) => {
+app.delete("/api/posts/:id", async (req, res) => {
   const { id } = req.params;
   const posts = readPosts();
-  const filtered = posts.filter(p => p.id !== id);
+  const index = posts.findIndex(p => p.id === id);
   
-  if (posts.length === filtered.length) {
+  if (index === -1) {
     return res.status(404).json({ error: "Post non trovato." });
   }
+
+  const post = posts[index];
   
+  // If it's a Vercel Blob URL, delete it from Vercel Blob immediately
+  if (post.mediaUrl && post.mediaUrl.includes("public.blob.vercel-storage.com")) {
+    try {
+      const token = process.env.BLOB_READ_WRITE_TOKEN;
+      if (token && !token.startsWith("vercel_blob_rw_...")) {
+        console.log(`[Delete-Post] Eliminazione del blob associato al post: ${post.mediaUrl}`);
+        await del(post.mediaUrl, { token });
+      }
+    } catch (err) {
+      console.error("[Delete-Post] Errore durante l'eliminazione del blob dal Vercel Storage:", err);
+    }
+  }
+
+  const filtered = posts.filter(p => p.id !== id);
   writePosts(filtered);
-  res.json({ success: true, message: "Post eliminato correttamente." });
+  res.json({ success: true, message: "Post eliminato correttamente e blob rimosso se presente." });
 });
+
 
 // API: Track CTA click
 app.post("/api/posts/:id/click", (req, res) => {
@@ -550,7 +665,13 @@ async function start() {
     cleanupExpiredBookings();
     setInterval(cleanupExpiredBookings, 60000);
     console.log("[Auto-Cleanup] Servizio di pulizia automatica prenotazioni attivato (frequenza: 60s).");
+    
+    // Perform initial Vercel Blob cleanup and start 15-minute interval for automatic deletions
+    cleanupExpiredBlobs();
+    setInterval(cleanupExpiredBlobs, 15 * 60 * 1000);
+    console.log("[Blob-Cleanup] Servizio di pulizia automatica blob attivato (frequenza: 15m).");
   });
+
 }
 
 start().catch(err => {

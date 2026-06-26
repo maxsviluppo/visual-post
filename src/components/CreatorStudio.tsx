@@ -49,28 +49,65 @@ export default function CreatorStudio({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
-  // File selection & load as Base64 Data URL
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // File selection & load as Base64 Data URL, then upload to Vercel Blob
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setIsUploading(true);
+    setFormError("");
+
+    // Auto-detect mediaType based on file MIME type
+    if (file.type.startsWith("video/")) {
+      setMediaType("video");
+    } else {
+      setMediaType("image");
+    }
+
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       if (event.target?.result) {
         const base64Url = event.target.result as string;
-        setMediaUrl(base64Url);
-        
-        // Auto-detect mediaType based on file MIME type
-        if (file.type.startsWith("video/")) {
-          setMediaType("video");
-        } else {
-          setMediaType("image");
+        try {
+          const response = await fetch("/api/upload", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              filename: file.name,
+              fileData: base64Url,
+              mimeType: file.type
+            })
+          });
+
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || "Errore nel caricamento del file.");
+          }
+
+          const data = await response.json();
+          setMediaUrl(data.url);
+        } catch (err: any) {
+          console.error("Errore durante l'upload:", err);
+          setFormError(err.message || "Errore di connessione durante il caricamento del file.");
+          setMediaUrl("");
+        } finally {
+          setIsUploading(false);
         }
       }
     };
+
+    reader.onerror = () => {
+      setFormError("Errore nella lettura del file locale.");
+      setIsUploading(false);
+    };
+
     reader.readAsDataURL(file);
   };
+
 
   // Drag handlers for overlay positioning
   const handleDragStart = (e: React.MouseEvent | React.TouchEvent) => {
@@ -811,23 +848,33 @@ export default function CreatorStudio({
                 />
 
                 <div 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="group relative flex flex-col items-center justify-center border-2 border-dashed border-zinc-800 hover:border-fuchsia-500 bg-zinc-900/20 hover:bg-zinc-900/60 rounded-2xl p-8 text-center cursor-pointer transition-all duration-300"
+                  onClick={() => !isUploading && fileInputRef.current?.click()}
+                  className={`group relative flex flex-col items-center justify-center border-2 border-dashed border-zinc-800 ${isUploading ? 'opacity-50 cursor-not-allowed' : 'hover:border-fuchsia-500 bg-zinc-900/20 hover:bg-zinc-900/60 cursor-pointer'} rounded-2xl p-8 text-center transition-all duration-300`}
                 >
                   <div className="p-4 rounded-full bg-zinc-800/40 group-hover:bg-fuchsia-500/10 text-zinc-400 group-hover:text-fuchsia-400 transition-colors mb-3">
-                    <Plus className="w-6 h-6 stroke-[2.5]" />
+                    {isUploading ? (
+                      <RefreshCw className="w-6 h-6 animate-spin text-fuchsia-400" />
+                    ) : (
+                      <Plus className="w-6 h-6 stroke-[2.5]" />
+                    )}
                   </div>
                   <p className="text-xs font-bold text-zinc-300 group-hover:text-white transition-colors">
-                    {mediaUrl ? "Sostituisci File" : "Carica Foto o Video"}
+                    {isUploading ? "Caricamento in corso su Vercel Blob..." : (mediaUrl ? "Sostituisci File" : "Carica Foto o Video")}
                   </p>
                   <p className="text-[10px] text-zinc-500 mt-1 max-w-[220px] mx-auto">
-                    Clicca per sfogliare i file del dispositivo (supporta immagini e video)
+                    {isUploading ? "Attendi completamento, stiamo archiviando il file..." : "Clicca per sfogliare i file del dispositivo (supporta immagini e video)"}
                   </p>
                 </div>
 
-                {mediaUrl && (
+                {isUploading && (
+                  <div className="text-[9px] text-fuchsia-400 font-bold flex items-center justify-center gap-1 bg-fuchsia-500/5 border border-fuchsia-500/10 rounded-xl py-2 px-3">
+                    <RefreshCw className="w-3 h-3 animate-spin" /> Archiviazione multimediale in corso...
+                  </div>
+                )}
+
+                {!isUploading && mediaUrl && (
                   <div className="text-[9px] text-emerald-400 font-bold flex items-center justify-center gap-1 bg-emerald-500/5 border border-emerald-500/10 rounded-xl py-2 px-3">
-                    <Check className="w-3 h-3" /> File caricato ({mediaType === "video" ? "Mini Video Loop" : "Immagine"})
+                    <Check className="w-3 h-3" /> File archiviato correttamente ({mediaType === "video" ? "Video" : "Immagine"})
                   </div>
                 )}
               </div>
@@ -909,12 +956,13 @@ export default function CreatorStudio({
                 <button
                   id="form-submit"
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isUploading}
                   className="flex-1 py-3.5 bg-gradient-to-r from-fuchsia-500 to-pink-500 text-zinc-950 font-black text-xs uppercase tracking-widest rounded-xl hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
                 >
-                  {isSubmitting ? "Salvataggio in corso..." : (editingPostId ? "Aggiorna Post" : "Pubblica sul Visual Stream")}
+                  {isUploading ? "Caricamento file..." : (isSubmitting ? "Salvataggio in corso..." : (editingPostId ? "Aggiorna Post" : "Pubblica sul Visual Stream"))}
                 </button>
               </div>
+
 
             </form>
           </div>

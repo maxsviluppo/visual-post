@@ -1,0 +1,74 @@
+[
+  {
+    "id": "seeded-1",
+    "title": "Caffè Specialty Etiopia Yirgacheffe",
+    "price": "€18.50",
+    "description": "Note floreali di gelsomino, pesca bianca e un delicato retrogusto di miele agrumato. Raccolto a mano a 2.100 metri d'altezza, tostato fresco artigianalmente ogni martedì. Un'esperienza sensoriale pura per veri appassionati.",
+    "mediaType": "image",
+    "mediaUrl": "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?q=80&w=800&auto=format&fit=crop",
+    "ctaText": "Ordina via WhatsApp",
+    "whatsappMessage": "Ciao! Vorrei maggiori informazioni sul Caffè Specialty Etiopia Yirgacheffe (€18.50). È ancora disponibile per la spedizione?",
+    "tags": [
+      "Specialty Coffee",
+      "Edizione Limitata",
+      "Tostatura Fresca"
+    ],
+    "createdAt": "2026-06-24T08:00:00.000Z",
+    "expiresAt": "2026-06-26T18:00:00.000Z",
+    "clickCount": 14
+  },
+  {
+    "id": "seeded-2",
+    "title": "Borsa Messenger in Pelle Artigianale",
+    "price": "€145.00",
+    "description": "Realizzata in pregiata pelle bovina conciata al vegetale in Toscana. Cuciture rinforzate in filo cerato, interni organizzati con scomparto imbottito per laptop fino a 14 pollici. Progettata per invecchiare con carattere.",
+    "mediaType": "image",
+    "mediaUrl": "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?q=80&w=800&auto=format&fit=crop",
+    "ctaText": "Richiedi Disponibilità",
+    "whatsappMessage": "Ciao! Ho visto sul Visual Stream la Borsa Messenger in Pelle Artigianale (€145.00). Quali sono i tempi di consegna?",
+    "tags": [
+      "Artigianato",
+      "Vera Pelle",
+      "Bestseller"
+    ],
+    "createdAt": "2026-06-23T10:00:00.000Z",
+    "expiresAt": null,
+    "clickCount": 29
+  },
+  {
+    "id": "seeded-3",
+    "title": "Poltrona Lounge Minimale 'Nordic Slate'",
+    "price": "€320.00",
+    "description": "Linee pulite, struttura in legno massello di rovere cerato e rivestimento in tessuto bouclé color avorio ad alta resistenza. Progettata per offrire il massimo comfort ergonomico senza ingombrare visivamente il tuo spazio.",
+    "mediaType": "image",
+    "mediaUrl": "https://images.unsplash.com/photo-1567538096630-e0c55bd6374c?q=80&w=800&auto=format&fit=crop",
+    "ctaText": "Prenota con Acconto",
+    "whatsappMessage": "Ciao! Vorrei pre-ordinare la Poltrona Lounge Minimale Nordic Slate (€320.00) vista nella vetrina. Mi spieghi come procedere?",
+    "tags": [
+      "Design Interni",
+      "Pre-Ordine",
+      "Home Decor"
+    ],
+    "createdAt": "2026-06-22T15:30:00.000Z",
+    "expiresAt": "2026-06-29T20:00:00.000Z",
+    "clickCount": 8
+  },
+  {
+    "id": "seeded-4",
+    "title": "Tastiera Meccanica Custom 'Sunset Glow'",
+    "price": "€189.00",
+    "description": "Switch tattili personalizzati e lubrificati a mano per un suono profondo e ovattato. Keycaps PBT a sublimazione con gradiente tramonto, case in alluminio CNC anodizzato grigio siderale e retroilluminazione calda.",
+    "mediaType": "image",
+    "mediaUrl": "https://images.unsplash.com/photo-1618384887929-16ec33faf9c1?q=80&w=800&auto=format&fit=crop",
+    "ctaText": "Acquista Ora",
+    "whatsappMessage": "Ciao! È ancora disponibile la Tastiera Meccanica Custom Sunset Glow (€189.00)? Ne vorrei ordinare una subito.",
+    "tags": [
+      "Desk Setup",
+      "Custom Tech",
+      "Pochi Pezzi"
+    ],
+    "createdAt": "2026-06-24T11:00:00.000Z",
+    "expiresAt": "2026-06-25T23:59:59.000Z",
+    "clickCount": 42
+  }
+]
