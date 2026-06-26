@@ -297,12 +297,16 @@ async function readPosts(): Promise<VisualStreamPost[]> {
   }
 }
 
-async function writePosts(posts: VisualStreamPost[]) {
+async function writePosts(posts: VisualStreamPost[]): Promise<boolean> {
   const dataStr = JSON.stringify(posts, null, 2);
+  let localOk = false;
+  let blobOk = false;
+
   try {
     fs.writeFileSync(POSTS_FILE, dataStr, "utf-8");
+    localOk = true;
   } catch (error) {
-    console.warn("Could not write posts file locally:", error);
+    console.warn("Could not write posts file locally (expected on Vercel serverless):", error);
   }
 
   try {
@@ -314,10 +318,16 @@ async function writePosts(posts: VisualStreamPost[]) {
         token
       });
       console.log("[Blob-DB] Posts salvati con successo su Vercel Blob.");
+      blobOk = true;
+    } else {
+      // No valid Blob token — local file is the only storage
+      blobOk = localOk;
     }
   } catch (err) {
     console.error("Error writing posts to Vercel Blob:", err);
   }
+
+  return localOk || blobOk;
 }
 
 
@@ -461,6 +471,26 @@ app.post("/api/upload", async (req, res) => {
   }
 });
 
+// API: Reset all post click counts (statistics)
+// IMPORTANT: This route must be declared BEFORE /api/posts/:id routes to avoid Express
+// treating 'reset-clicks' as a dynamic :id parameter.
+app.post("/api/posts/reset-clicks", async (req, res) => {
+  try {
+    const posts = await readPosts();
+    posts.forEach(p => {
+      p.clickCount = 0;
+    });
+    const saved = await writePosts(posts);
+    if (!saved) {
+      return res.status(500).json({ error: "Impossibile salvare le statistiche. Verificare la configurazione di BLOB_READ_WRITE_TOKEN su Vercel." });
+    }
+    res.json({ success: true, message: "Statistiche azzerate con successo." });
+  } catch (err: any) {
+    console.error("[Reset-Clicks] Errore:", err);
+    res.status(500).json({ error: "Errore interno durante il reset delle statistiche: " + err.message });
+  }
+});
+
 // API: Delete a post
 app.delete("/api/posts/:id", async (req, res) => {
   const { id } = req.params;
@@ -482,13 +512,19 @@ app.delete("/api/posts/:id", async (req, res) => {
         await del(post.mediaUrl, { token });
       }
     } catch (err) {
+      // Non-fatal: log and continue. The post record will still be deleted.
       console.error("[Delete-Post] Errore durante l'eliminazione del blob dal Vercel Storage:", err);
     }
   }
 
   const filtered = posts.filter(p => p.id !== id);
 
-  await writePosts(filtered);
+  const saved = await writePosts(filtered);
+  if (!saved) {
+    return res.status(500).json({ 
+      error: "Impossibile salvare le modifiche. Verificare la configurazione di BLOB_READ_WRITE_TOKEN su Vercel." 
+    });
+  }
   res.json({ success: true, message: "Post eliminato correttamente e blob rimosso se presente." });
 });
 
@@ -506,16 +542,6 @@ app.post("/api/posts/:id/click", async (req, res) => {
   }
   
   res.status(404).json({ error: "Post non trovato." });
-});
-
-// API: Reset all post click counts (statistics)
-app.post("/api/posts/reset-clicks", async (req, res) => {
-  const posts = await readPosts();
-  posts.forEach(p => {
-    p.clickCount = 0;
-  });
-  await writePosts(posts);
-  res.json({ success: true, message: "Statistiche azzerate con successo." });
 });
 
 // API: Get settings

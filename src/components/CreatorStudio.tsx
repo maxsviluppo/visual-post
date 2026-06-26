@@ -391,9 +391,18 @@ export default function CreatorStudio({
       const res = await fetch(`/api/posts/${id}`, { method: "DELETE" });
       if (res.ok) {
         onRefreshPosts();
+      } else {
+        let errMsg = "Errore durante l'eliminazione del post.";
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        alert(`Errore (${res.status}): ${errMsg}`);
+        console.error("Delete post fallito:", res.status, errMsg);
       }
     } catch (err) {
       console.error("Errore eliminazione post:", err);
+      alert("Errore di rete durante l'eliminazione. Controlla la connessione e riprova.");
     }
   };
 
@@ -407,11 +416,17 @@ export default function CreatorStudio({
       if (res.ok) {
         onRefreshPosts();
       } else {
-        alert("Errore durante l'azzeramento delle statistiche.");
+        let errMsg = "Errore durante l'azzeramento delle statistiche.";
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        alert(`Errore (${res.status}): ${errMsg}`);
+        console.error("Reset stats fallito:", res.status, errMsg);
       }
     } catch (e) {
       console.error("Errore reset statistiche:", e);
-      alert("Errore di rete.");
+      alert("Errore di rete durante il reset statistiche.");
     }
   };
 
